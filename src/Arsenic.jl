@@ -37,9 +37,12 @@ module Arsenic
         base, loc, insts
     end
     
-    function compute_stack
+    function compute_stack(modules, session::Gallium.Ptrace.Session)
+      regs = Gallium.getregs(session)
+      stack, RCs = Gallium.stackwalk(regs, session, modules, rich_c = true, collectRCs = true)
+      Gallium.NativeStack(stack,RCs,modules,session)
     end
-    
+
     function update_stack!(state, session = state.top_interp.session)
         state.interp = state.top_interp = compute_stack(state.top_interp.modules, session)
     end
