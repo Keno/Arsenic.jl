@@ -8,10 +8,9 @@ module Arsenic
     using ObjFileBase
     using ObjFileBase: handle
 
-    function get_insts(session, modules, stack)
-        stack = isa(stack, Gallium.NativeStack) ? stack.stack[end] : stack
-        base, mod = Gallium.find_module(session, modules, UInt(stack.ip))
-        modrel = UInt(UInt(stack.ip)-base)
+    function get_insts(session, modules, ip)
+        base, mod = Gallium.find_module(session, modules, UInt(ip))
+        modrel = UInt(UInt(ip)-base)
         if isnull(mod.xpdata)
             loc, fde = Gallium.Unwinder.find_fde(mod, modrel)
             seekloc = loc
@@ -51,5 +50,6 @@ module Arsenic
     include("disassembler.jl")
     include("stepping.jl")
     include("remoteexec.jl")
+    is_linux() && isfile(Pkg.dir("RR","src","RR.jl")) && include("arrsenic.jl")
     include("interface.jl")
 end # module

@@ -1,19 +1,27 @@
-function run_function(f, timeline, name::Union{Symbol,AbstractString}, args::Vector)
+function run_function(f, timeline, modules, name::Union{Symbol,AbstractString}, args::Vector)
     # Find the function ip
     (h, base, sym)  = Gallium.lookup_sym(timeline, modules, name)
     addr = base + ObjFileBase.deref(sym).st_value
     run_function(f, timeline, addr, args)
 end
 
-run_function(f, timeline, name, args::Union{Integer,Ptr}) = run_function(f, timeline, name, [args])
+run_function(f, timeline, modules, name, args::Union{Integer,Ptr}) = run_function(f, timeline, modules, name, [args])
 
 const args_regs = [:rdi, :rsi, :rdx, :rcx, :r8, :r9]
-function run_function(f, timeline, addr::Integer, args::Vector)
+function run_function(f, timeline, addr::Union{Integer,RemotePtr}, args::Vector)
     diversion = prepare_remote_execution(timeline)
     icxx"$diversion->set_visible_execution(true);"
     
-    # Pick an arbitrary task to run our expression
-    task = icxx"$diversion->tasks().begin()->second;"
+    addr = UInt64(addr)
+    
+    # Pick an arbitrary task with the same tgid as our current task to run our
+    # expression
+    task = icxx"""
+        for (auto &t : $diversion->tasks())
+            if (t.second->tgid() == $(current_task(timeline))->tgid())
+                return t.second;
+        return (rr::Task *)nullptr;
+    """
     regs = icxx"$task->regs();"
     
     # Set up the call frame

@@ -1,21 +1,21 @@
 using ASTInterpreter
 
 function ASTInterpreter.execute_command(state, stack, ::Val{:disas}, command)
-    base, loc, insts = get_insts(stack, state.top_interp.modules)
-    x = isa(stack, Gallium.NativeStack) ? stack.stack[end] : stack
-    disasm_around_ip(STDOUT, insts, UInt64(x.ip-loc-base-(x.stacktop?0:1)); ipbase=base+loc, circular = false)
+    parts = split(command, ' ')
+    stacktop = 0
+    if length(parts) > 1
+        ip = parse(Int, parts[2], 16)
+    else
+        x = isa(stack, Gallium.NativeStack) ? stack.stack[end] : stack
+        stacktop = (x.stacktop?0:1); ip = x.ip
+    end
+    base, loc, insts = get_insts(state.top_interp.session, state.top_interp.modules, ip)
+    disasm_around_ip(STDOUT, insts, UInt64(ip-loc-base-stacktop); ipbase=base+loc, circular = false)
     return false
 end
 
 function ASTInterpreter.execute_command(state, stack::Union{Gallium.NativeStack,Gallium.CStackFrame}, ::Val{:si}, command)
     Gallium.single_step!(state.top_interp.session)
-    update_stack!(state)
-    return true
-end
-
-function ASTInterpreter.execute_command(state, stack::Union{Gallium.NativeStack,Gallium.CStackFrame}, ::Val{:rsi}, command)
-    task = isa(stack, Gallium.NativeStack) ? stack.session : current_task(current_session(timeline))
-    RR.reverse_single_step!(current_session(timeline),task,timeline)
     update_stack!(state)
     return true
 end
@@ -43,8 +43,9 @@ function compute_current_line_range(state, stack)
 end
 
 function ASTInterpreter.execute_command(state, stack::Union{Gallium.NativeStack,Gallium.CStackFrame}, ::Val{:n}, command)
+    session = state.top_interp.session
     range = compute_current_line_range(state, stack)
-    step_over(timeline, range)
+    step_over(session, range)
     update_stack!(state)
     return true
 end
@@ -58,8 +59,8 @@ end
 function ASTInterpreter.execute_command(state, stack::Union{Gallium.NativeStack,Gallium.CStackFrame}, ::Val{:nb}, command)
     session = state.top_interp.session
     # First determine the ip of the next branch
-    base, loc, insts = get_insts(stack, state.top_interp.modules)
     x = isa(stack, Gallium.NativeStack) ? stack.stack[end] : stack
+    base, loc, insts = get_insts(session, state.top_interp.modules, x.ip)
     ctx = DisAsmContext()
     Offset = UInt(x.ip - loc - base)
     branchip = 0
@@ -98,7 +99,7 @@ function ASTInterpreter.print_status(state, x::Gallium.CStackFrame; kwargs...)
     ipoffset = 0
     ipbase = x.ip
     if found
-        base, loc, insts = get_insts(session, modules, x)
+        base, loc, insts = get_insts(session, modules, ipbase)
         ipbase = base+loc
         ipoffset = UInt64(x.ip-loc-base-(x.stacktop?0:1))
     else
@@ -154,7 +155,7 @@ end
 
 function ASTInterpreter.execute_command(state, stack, ::Val{:c}, command)
     try
-        Gallium.continue!(state.top_interp.session)
+        Gallium.continue!(state.top_interp.session; only_current_tgid = true)
     catch err
         !isa(err, InterruptException) && rethrow(err)
     end
@@ -173,6 +174,13 @@ function ASTInterpreter.execute_command(state, stack::Union{Gallium.CStackFrame,
     end
     show(UInt(Gallium.get_dwarf(RC, Gallium.X86_64.inverse_dwarf[regname])))
     println(); println()
+    return false
+end
+
+function ASTInterpreter.execute_command(state, stack::Union{Gallium.CStackFrame,Gallium.NativeStack}, ::Val{:unwind}, command)
+    ns = state.top_interp
+    newRC = Gallium.Unwinder.unwind_step(ns.session, ns.modules, ns.RCs[end-(state.level-1)])[2]
+    @show newRC
     return false
 end
 
@@ -231,29 +239,5 @@ function ASTInterpreter.execute_command(state, stack::Union{Gallium.CStackFrame,
     end
     iterate_frame_variables(state, stack, found_cb, (dbgs, vardie, name)->nothing)
     
-    return false
-end
-
-function ASTInterpreter.execute_command(state, stack, ::Val{:task}, command)
-    subcommand = split(command, " ")[2:end]
-    if subcommand[1] == "list"
-        icxx"""
-            for (auto &task : $(current_session(timeline))->tasks())
-                $:(println(IOContext(STDOUT,:modules=>modules),
-                    icxx"return task.second;"); nothing);
-        """
-        println(STDOUT)
-    elseif subcommand[1] == "select"
-        n = parse(Int, subcommand[2])
-        (n < 1 || n > icxx"$(current_session(timeline))->tasks().size();") &&
-            (print_with_color(:red, STDERR, "Not a valid task"); return false)
-        it = icxx"$(current_session(timeline))->tasks().begin();"
-        while n > 1
-            icxx"++$it;";
-            n -= 1
-        end
-        update_stack!(state, icxx"$it->second;")
-        return true
-    end
     return false
 end

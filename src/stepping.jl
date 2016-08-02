@@ -4,7 +4,7 @@ function iterate_instructions(f, session)
     ctx = DisAsmContext()
     cont = true
     while cont
-        insts = Gallium.load(timeline, RemotePtr{UInt8}(addr), 15)
+        insts = Gallium.load(session, RemotePtr{UInt8}(addr), 15)
         (Inst, InstSize) = getInstruction(insts, 0; ctx = ctx)
         cont = f(addr, Inst, ctx)
         addr += InstSize
@@ -60,7 +60,7 @@ function step_over(session, range)
         # We're at an instruction that may step out of the range. Single
         # step and see where we are
         Gallium.single_step!(session)
-        (UInt64(Gallium.ip(timeline)) ∈ range) && continue
+        (UInt64(Gallium.ip(session)) ∈ range) && continue
         break
     end
 end
