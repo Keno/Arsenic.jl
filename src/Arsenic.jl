@@ -37,9 +37,29 @@ module Arsenic
     end
     
     function compute_stack(modules, session::Gallium.Ptrace.Session)
-      regs = Gallium.getregs(session)
-      stack, RCs = Gallium.stackwalk(regs, session, modules, rich_c = true, collectRCs = true)
-      Gallium.NativeStack(stack,RCs,modules,session)
+        regs = Gallium.getregs(session)
+        stack, RCs = Gallium.stackwalk(regs, session, modules, rich_c = true, collectRCs = true)
+        Gallium.NativeStack(stack,RCs,modules,session)
+    end
+    
+    # We should be in the same frame, fast path stack unwinding
+    function update_stack_same_frame!(state, session = state.top_interp.session)
+        regs = Gallium.getregs(session)
+        modules = state.top_interp.modules
+        oldstack, oldRCs = state.top_interp.stack, state.top_interp.RCs
+        (ok, oneupRC) = try
+            Gallium.Unwinder.unwind_step(session, modules, regs; stacktop = true, ip_only = false)
+        catch err
+            @show err
+            return update_stack!(state, session)
+        end
+        parentsmatch = Gallium.ip(oldRCs[end-1]) == Gallium.ip(oneupRC) &&
+            Gallium.get_dwarf(oldRCs[end-1], :rsp) == Gallium.get_dwarf(oneupRC, :rsp)
+        (!ok || !parentsmatch) && update_stack!(state, session)
+        stack, RCs = copy(oldstack), copy(oldRCs)
+        stack[end - 1] = Gallium.frameinfo(regs, session, modules; rich_c = true)
+        RCs[end - 1] = regs
+        state.interp = state.top_interp = Gallium.NativeStack(stack,RCs,modules,session)
     end
 
     function update_stack!(state, session = state.top_interp.session)

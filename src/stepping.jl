@@ -9,6 +9,7 @@ function iterate_instructions(f, session)
         cont = f(addr, Inst, ctx)
         addr += InstSize
         free(Inst)
+        Inst = nothing
     end
 end
 
@@ -32,6 +33,16 @@ function LastInstrInRange(session, range)
     return addr
 end
 
+
+task_step_until_bkpt!(session) = Gallium.step_until_bkpt!(session)
+
+function step_to_address(session, addr)
+    bp = Gallium.breakpoint(session, addr)
+    task_step_until_bkpt!(session)
+    Gallium.disable(bp)
+    nothing
+end
+
 function step_over(session, range)
     while true
         nba = NextBranchAddr(session)
@@ -43,7 +54,7 @@ function step_over(session, range)
         bp = Gallium.breakpoint(session, nba)
         # get_frame
         while true
-            Gallium.step_until_bkpt!(session)
+            task_step_until_bkpt!(session)
             #comp = compare_frames(frame, timeline)
             #if older
             #    Gallium.disable(bp)

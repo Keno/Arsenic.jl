@@ -65,6 +65,36 @@ function ASTInterpreter.execute_command(state, stack::Union{Gallium.NativeStack,
     return true
 end
 
+"""
+Reverse continue until a breakpoint is hit
+"""
+function ASTInterpreter.execute_command(state, stack::Union{Gallium.NativeStack,Gallium.CStackFrame}, ::Val{:rc}, command)
+    timeline = state.top_interp.session
+    RR.silence!(timeline)
+    target_tgid = icxx"$(current_task(timeline))->tgid();"
+    while true
+        RR.reverse_continue!(timeline)
+        if icxx"$(current_task(timeline))->tgid();" != target_tgid
+            continue
+        end
+        break
+    end
+    update_stack!(state)
+    return true    
+end
+    
+
+function task_step_until_bkpt!(timeline::Union{RR.ReplayTimeline, RR.ReplaySession, RR.ReplayTask})
+    target_tgid = icxx"$(current_task(timeline))->tgid();"
+    while true
+        Gallium.step_until_bkpt!(timeline)
+        if icxx"$(current_task(timeline))->tgid();" != target_tgid
+            continue
+        end
+        break
+    end
+end
+
 function ASTInterpreter.execute_command(state, stack, ::Val{:when}, command)
     show(STDOUT, UInt64(icxx"$(current_task(current_session(timeline)))->tick_count();"))
     println(STDOUT); println(STDOUT)
@@ -154,13 +184,14 @@ end
 
 const mark_stack = AnnotatedMark[]
 function ASTInterpreter.execute_command(state, stack, ::Val{:mark}, command)
+    timeline = state.top_interp.session
     push!(mark_stack,AnnotatedMark(icxx"$timeline->mark();",command[5:end]))
     return false
 end
 
 using JLD
 """
-List all marks.
+Manipulate marks.
 """
 function ASTInterpreter.execute_command(state, stack, ::Val{:marks}, command)
     subcmds = split(command," ")[2:end]
@@ -170,9 +201,10 @@ function ASTInterpreter.execute_command(state, stack, ::Val{:marks}, command)
         end
     elseif subcmds[1] == "save"
         annotations = map(x->x.annotation,mark_stack)
-        marks = map(x->reinterpret(UInt8,[icxx"$(x.mark)->ptr.proto".data]),mark_stack)
+        marks = map(x->reinterpret(UInt8,[icxx"$(x.mark).ptr->proto;".data]),mark_stack)
         @save "marks.jld" annotations marks
     elseif subcmds[1] == "load"
+        timeline = state.top_interp.session
         @load "marks.jld" annotations marks
         pms = map(x->cxxt"rr::ReplayTimeline::ProtoMark"{312}(reinterpret(NTuple{312,UInt8},x)[]),marks)
         println("Recreating marks. One moment please...")
@@ -180,6 +212,8 @@ function ASTInterpreter.execute_command(state, stack, ::Val{:marks}, command)
             RR.seek(timeline, pm)
             push!(mark_stack,AnnotatedMark(icxx"$timeline->mark();",annotation))
         end
+        update_stack!(state)
+        return true
     else
         print_with_color(:red, "Unknown subcommand\n")
     end
@@ -189,9 +223,12 @@ end
 
 using ProgressMeter
 import RR: when
-when() = when(current_session(timeline))
+when(timeline::RR.ReplayTimeline) = when(current_session(timeline))
+global_time(timeline) = icxx"$(current_task(timeline))->trace_time();"
 function ASTInterpreter.execute_command(state, stack, ::Val{:timejump}, command)
+    timeline = state.top_interp.session
     subcmd = split(command)[2:end]
+    local target_is_event = false
     if startswith(subcmd[1],"@")
         n = parse(Int, subcmd[1][2:end])
         icxx"$timeline->seek_to_mark($(mark_stack[n].mark));"
@@ -200,10 +237,16 @@ function ASTInterpreter.execute_command(state, stack, ::Val{:timejump}, command)
         println("We have arrived.")
         update_stack!(state)
         return true
+    elseif startswith(subcmd[1], "e")
+        target = parse(Int, subcmd[1][2:end])
+        me = global_time(timeline)
+        n = target - me
+        target_is_event = true
+    else
+        me = when(timeline)
+        target = me + n
+        n = parse(Int, subcmd[1])
     end
-    n = parse(Int, subcmd[1])
-    me = when()
-    target = me + n
     p = Progress(n, 1, "Time travel in progress (forwards)...", 50)
     function check_for_breakpoint(res)
         if icxx"$res.break_status.breakpoint_hit;"
@@ -216,25 +259,27 @@ function ASTInterpreter.execute_command(state, stack, ::Val{:timejump}, command)
         end
         false
     end
-    while when() < target
+    while (target_is_event ? global_time(timeline) : when(timeline)) < target
         # Step past any breakpoints
         if RR.at_breakpoint(timeline)
             RR.emulate_single_step!(timeline, current_vm()) || RR.single_step!(timeline)
         end
-        res = RR.step!(current_session(timeline), target)
-        if icxx"$res.break_status.approaching_ticks_target;"
+        res = RR.step!(current_session(timeline), target; target_is_event = target_is_event)
+        if !target_is_event && icxx"$res.break_status.approaching_ticks_target;"
             break
         end
         check_for_breakpoint(res) && return true
         icxx"$timeline->maybe_add_reverse_exec_checkpoint(rr::ReplayTimeline::LOW_OVERHEAD);"
-        now = when()
+        now = (target_is_event ? global_time(timeline) : when(timeline))
         now != me && ProgressMeter.update!(p, Int64(now) - Int(me))
     end
-    while when() < target
-        res = RR.single_step!(timeline)
-        check_for_breakpoint(res) && return true
-        now = when()
-        now != me && ProgressMeter.update!(p, Int64(now) - Int(me))
+    if !target_is_event
+        while when() < target
+            res = RR.single_step!(timeline)
+            check_for_breakpoint(res) && return true
+            now = when()
+            now != me && ProgressMeter.update!(p, Int64(now) - Int(me))
+        end
     end
     icxx"$timeline->apply_breakpoints_and_watchpoints();"
     println("We have arrived.")
@@ -260,6 +305,11 @@ function ASTInterpreter.execute_command(state, stack, ::Val{:map}, command)
     pid = icxx"$(current_task(timeline))->real_tgid();"
     println(first(filter(map->UInt64(ip) ∈ map[1], Gallium.Ptrace.MapsIterator("/proc/$pid/maps")))[3])
     return false
+end
+
+function ASTInterpreter.execute_command(state, stack, ::Val{:gdb}, command)
+    icxx"rr::GdbServer::emergency_debug($(current_task(state.top_interp.session)));"
+    false
 end
 
 

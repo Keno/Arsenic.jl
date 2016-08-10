@@ -133,7 +133,7 @@ function getInstruction(data::Vector{UInt8}, offset; ctx = DisAsmContext())
         return InstSize;
     }
   """
-  if InstSize == C_NULL
+  if InstSize == 0
     error("Invalid Instruction")
   end
   (Inst, InstSize)
@@ -254,6 +254,7 @@ function disassemble2(data::Vector{UInt8}, instrange = nothing; io = STDOUT,
     end
     println(io)
     free(Inst)
+    Inst = nothing
     Offset += InstSize
   end
 end

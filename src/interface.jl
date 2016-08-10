@@ -14,9 +14,11 @@ function ASTInterpreter.execute_command(state, stack, ::Val{:disas}, command)
     return false
 end
 
+task_single_step!(timeline) = Gallium.single_step!(timeline)
+
 function ASTInterpreter.execute_command(state, stack::Union{Gallium.NativeStack,Gallium.CStackFrame}, ::Val{:si}, command)
-    Gallium.single_step!(state.top_interp.session)
-    update_stack!(state)
+    task_single_step!(state.top_interp.session)
+    update_stack_same_frame!(state)
     return true
 end
 
@@ -46,7 +48,7 @@ function ASTInterpreter.execute_command(state, stack::Union{Gallium.NativeStack,
     session = state.top_interp.session
     range = compute_current_line_range(state, stack)
     step_over(session, range)
-    update_stack!(state)
+    update_stack_same_frame!(state)
     return true
 end
 
@@ -74,10 +76,10 @@ function ASTInterpreter.execute_command(state, stack::Union{Gallium.NativeStack,
         free(Inst)
     end
     @assert branchip != 0
-    bp = Gallium.breakpoint(branchip)
-    Gallium.step_until_bkpt!(session)
-    disable(bp)
-    update_stack!(state)
+    bp = Gallium.breakpoint(session, branchip)
+    task_step_until_bkpt!(session)
+    Gallium.disable(bp)
+    update_stack_same_frame!(state)
     return true
 end
 
@@ -118,7 +120,7 @@ function demangle(name)
         &$bufsize, &$status);
     """
     @assert status[] == 0
-    ret = bytestring(str)
+    ret = unsafe_string(str)
     Libc.free(str)
     ret
 end
@@ -135,7 +137,9 @@ function symbolicate_frame(session, modules, x)
     found, symb
 end
 
-function ASTInterpreter.print_frame(io, num, x::Gallium.CStackFrame, session, modules)
+function ASTInterpreter.print_frame(state, io, num, x::Gallium.CStackFrame)
+    session = state.top_interp.session
+    modules = state.top_interp.modules
     print(io, "[$num] ")
     found, symb = symbolicate_frame(session, modules, x)
     print(io, symb, " ")
@@ -143,14 +147,6 @@ function ASTInterpreter.print_frame(io, num, x::Gallium.CStackFrame, session, mo
       print(io, " at ",x.file,":",x.line)
     end
     println(io)
-end
-
-function ASTInterpreter.print_backtrace(stack::Gallium.NativeStack)
-    num = 1
-    for frame in reverse(stack.stack)
-        ASTInterpreter.print_frame(STDOUT, num, frame, stack.session, stack.modules)
-        num += 1
-    end
 end
 
 function ASTInterpreter.execute_command(state, stack, ::Val{:c}, command)
@@ -190,7 +186,7 @@ function ASTInterpreter.execute_command(state, stack::Union{Gallium.CStackFrame,
     @assert isa(ns, Gallium.NativeStack)
     parentRC = ns.RCs[end-(state.level)]
     theip = Gallium.ip(parentRC)
-    Gallium.step_to_address!(session, theip; disable_bps = true)
+    step_to_address(session, theip)
     update_stack!(state)
     return true
 end
