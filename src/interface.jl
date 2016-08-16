@@ -1,5 +1,13 @@
 using ASTInterpreter
 
+function triple_for_sess(sess)
+    if isa(Gallium.getarch(sess), Gallium.X86_64.X86_64Arch)
+        return "x86_64-linux-gnu"
+    else
+        return "i386-linux-gnu"
+    end
+end
+
 function ASTInterpreter.execute_command(state, stack, ::Val{:disas}, command)
     parts = split(command, ' ')
     stacktop = 0
@@ -10,7 +18,8 @@ function ASTInterpreter.execute_command(state, stack, ::Val{:disas}, command)
         stacktop = (x.stacktop?0:1); ip = x.ip
     end
     base, loc, insts = get_insts(state.top_interp.session, state.top_interp.modules, ip)
-    disasm_around_ip(STDOUT, insts, UInt64(ip-loc-base-stacktop); ipbase=base+loc, circular = false)
+    disasm_around_ip(STDOUT, insts, UInt64(ip-loc-base-stacktop);
+        ipbase=base+loc, circular = false, triple = triple_for_sess(state.top_interp.session))
     return false
 end
 
@@ -107,7 +116,19 @@ function ASTInterpreter.print_status(state, x::Gallium.CStackFrame; kwargs...)
     else
         insts = Gallium.load(session, Gallium.RemotePtr{UInt8}(x.ip), 40)
     end
-    disasm_around_ip(STDOUT, insts, ipoffset; ipbase=ipbase)
+    try
+        # Try disassembling at the start of the function, highlighting the
+        # current ip.
+        disasm_around_ip(STDOUT, insts, ipoffset; ipbase=ipbase, triple = triple_for_sess(state.top_interp.session))
+    catch
+        warn("Failed to obtain instructions from object files. Incorrect unwind info?")
+        # This could have failed for a variety of reasons (missing unwind info,
+        # self modifying code, etc). If so, get the instructions directly
+        # from the target
+        insts = Gallium.load(session, Gallium.RemotePtr{UInt8}(x.ip), 40)
+        ipoffset = 0
+        disasm_around_ip(STDOUT, insts, ipoffset; ipbase=ipbase, triple = triple_for_sess(state.top_interp.session))
+    end
 end
 
 cxx"""#include <cxxabi.h>"""
@@ -164,11 +185,13 @@ function ASTInterpreter.execute_command(state, stack::Union{Gallium.CStackFrame,
     @assert isa(ns, Gallium.NativeStack)
     RC = ns.RCs[end-(state.level-1)]
     regname = Symbol(split(command,' ')[2])
-    if !haskey(Gallium.X86_64.inverse_dwarf, regname)
+    inverse_map = isa(Gallium.getarch(state.top_interp.session),Gallium.X86_64.X86_64Arch) ?
+        Gallium.X86_64.inverse_dwarf : Gallium.X86_32.inverse_dwarf
+    if !haskey(inverse_map, regname)
         print_with_color(:red, STDOUT, "No such register\n")
         return false
     end
-    show(UInt(Gallium.get_dwarf(RC, Gallium.X86_64.inverse_dwarf[regname])))
+    show(UInt(Gallium.get_dwarf(RC, inverse_map[regname])))
     println(); println()
     return false
 end
@@ -177,6 +200,15 @@ function ASTInterpreter.execute_command(state, stack::Union{Gallium.CStackFrame,
     ns = state.top_interp
     newRC = Gallium.Unwinder.unwind_step(ns.session, ns.modules, ns.RCs[end-(state.level-1)])[2]
     @show newRC
+    return false
+end
+
+function ASTInterpreter.execute_command(state, stack::Union{Gallium.CStackFrame,Gallium.NativeStack}, ::Val{:modules}, command)
+    modules = state.top_interp.modules
+    modules = sort(collect(modules), by = x->x[1])
+    for (base, mod) in modules
+        show(UInt64(base)); print('-'); show(UInt64(base)+mod.sz); println()
+    end
     return false
 end
 
@@ -190,6 +222,16 @@ function ASTInterpreter.execute_command(state, stack::Union{Gallium.CStackFrame,
     update_stack!(state)
     return true
 end
+
+function ASTInterpreter.execute_command(state, stack::Union{Gallium.CStackFrame,Gallium.NativeStack}, ::Val{:b}, command)
+    session = state.top_interp.session
+    modules = state.top_interp.modules
+    symbol = Symbol(split(command,' ')[2])
+    bp = Gallium.breakpoint(session, modules, symbol)
+    show(bp)
+    return false
+end
+
 
 function dwarf2Cxx(dbgs, dwarfT)
     if DWARF.tag(dwarfT) == DWARF.DW_TAG_pointer_type || 

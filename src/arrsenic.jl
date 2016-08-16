@@ -40,10 +40,10 @@ function ASTInterpreter.execute_command(state, stack::Union{Gallium.NativeStack,
 
     # Reverse continue until the breakpoint is hit at a matching CFA, or until
     # we're at a breakpoint higher up the stack (which would imply that we missed it)
-    target_tgid = icxx"$(current_task(timeline))->tgid();"
+    target_tuid = RR.tuid(current_task(timeline))
     while true
         RR.reverse_continue!(timeline)
-        if icxx"$(current_task(timeline))->tgid();" != target_tgid
+        if !(RR.tuid(current_task(timeline)) == target_tuid)
             continue
         end
         # TODO: Check that we're at the right breakpoint
@@ -96,8 +96,12 @@ function task_step_until_bkpt!(timeline::Union{RR.ReplayTimeline, RR.ReplaySessi
 end
 
 function ASTInterpreter.execute_command(state, stack, ::Val{:when}, command)
+    timeline = state.top_interp.session
+    print(STDOUT, "Ticks: ")
     show(STDOUT, UInt64(icxx"$(current_task(current_session(timeline)))->tick_count();"))
-    println(STDOUT); println(STDOUT)
+    println(STDOUT);
+    print(STDOUT, "Time: ", global_time(timeline))
+    println(STDOUT)
     return false
 end
 
@@ -249,7 +253,7 @@ function ASTInterpreter.execute_command(state, stack, ::Val{:timejump}, command)
     end
     p = Progress(n, 1, "Time travel in progress (forwards)...", 50)
     function check_for_breakpoint(res)
-        if icxx"$res.break_status.breakpoint_hit;"
+        if icxx"$res.break_status.breakpoint_hit == true;"
             regs = icxx"$(current_task(current_session(timeline)))->regs();"
             if RR.process_lowlevel_conditionals(Location(timeline, Gallium.ip(regs)), regs)
                 println("Interrupted by breakpoint.")
@@ -534,6 +538,7 @@ end
 function ASTInterpreter.execute_command(state, stack::Union{Gallium.NativeStack,Gallium.CStackFrame}, ::Val{:rsi}, command)
     timeline = state.top_interp.session
     task = isa(stack, Gallium.NativeStack) ? stack.session : current_task(current_session(timeline))
+    isa(task, RR.ReplayTimeline) && (task = current_task(current_session(task)))
     RR.reverse_single_step!(current_session(timeline),task,timeline)
     update_stack!(state)
     return true

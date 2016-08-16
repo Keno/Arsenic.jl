@@ -1,7 +1,7 @@
 function run_function(f, timeline, modules, name::Union{Symbol,AbstractString}, args::Vector)
     # Find the function ip
     (h, base, sym)  = Gallium.lookup_sym(timeline, modules, name)
-    addr = base + ObjFileBase.deref(sym).st_value
+    addr = Gallium.compute_symbol_value(h, base, sym)
     run_function(f, timeline, addr, args)
 end
 
@@ -90,7 +90,7 @@ function lookup_external_symbol(modules, name)::UInt64
     global data_buffer_start
     name == "data_buffer_start" && return data_buffer_start
     h,base,sym = Gallium.lookup_sym(timeline, modules, name)
-    ret = UInt64(Gallium.RemoteCodePtr(base + ObjFileBase.deref(sym).st_value))
+    ret = ObjFileBase.compute_symbol_value(h, base, sym)
     return ret
 end
 
@@ -243,7 +243,7 @@ end
 
 function trace_func(jit, callbacks, fname, entry_func, exit_func = "")
     h,base,sym = Gallium.lookup_sym(timeline, modules, fname)
-    hook_addr = Gallium.RemoteCodePtr(base + ObjFileBase.deref(sym).st_value)
+    hook_addr = ObjFileBase.compute_symbol_value(h, base, sym)
     
     shadowmod = Cxx.instance(TargetClang).shadow
     targetmod = icxx"""new llvm::Module("Target Module", $shadowmod->getContext());"""

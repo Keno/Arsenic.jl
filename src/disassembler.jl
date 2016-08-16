@@ -5,9 +5,9 @@ using DataStructures
 Show the five instructions surrounding ipoffset (two before, two after), with an
 indicator which instruction is at ipoffset.
 """
-function disasm_around_ip(io, insts, ipoffset; ipbase = 0, circular = true)
+function disasm_around_ip(io, insts, ipoffset; ipbase = 0, circular = true, triple = getDefaultTargetTriple())
     Offset = 0
-    ctx = DisAsmContext()
+    ctx = DisAsmContext(triple)
     const InstInfo = Tuple{Int,Bool,AbstractString}
     buf = circular ? CircularBuffer{InstInfo}(5) : Vector{InstInfo}()
     targetn = typemax(Int64)
@@ -70,16 +70,12 @@ immutable DisAsmContext
   MIP::pcpp"llvm::MCInstPrinter"
 end
 
-function DisAsmContext()
-  TripleName = icxx"""
+
+getDefaultTargetTriple() = icxx"sys::getDefaultTargetTriple();"
+function DisAsmContext(TripleName=getDefaultTargetTriple())
+  icxx"""
     llvm::InitializeNativeTargetAsmParser();
     llvm::InitializeNativeTargetDisassembler();
-
-    // Get the host information
-    std::string TripleName;
-    if (TripleName.empty())
-        TripleName = sys::getDefaultTargetTriple();
-    TripleName;
   """
 
   TheTarget = icxx"""
@@ -94,7 +90,7 @@ function DisAsmContext()
   MCtx = icxx" new MCContext($MAI, $MRI, $MOFI); "
   MSTI = icxx"""
     Triple TheTriple(Triple::normalize($TripleName));
-    $MOFI->InitMCObjectFileInfo(TheTriple, Reloc::Default, CodeModel::Default, *$MCtx);
+    $MOFI->InitMCObjectFileInfo(TheTriple, Reloc::PIC_, CodeModel::Default, *$MCtx);
     SubtargetFeatures Features;
     Features.getDefaultSubtargetFeatures(TheTriple);
     std::string MCPU = sys::getHostCPUName();

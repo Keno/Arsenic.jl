@@ -7,6 +7,7 @@ module Arsenic
     using DWARF: CallFrameInfo
     using ObjFileBase
     using ObjFileBase: handle
+    using ELF
 
     function get_insts(session, modules, ip)
         base, mod = Gallium.find_module(session, modules, UInt(ip))
@@ -30,6 +31,12 @@ module Arsenic
             text = first(filter(x->sectionname(x)==
                 ObjFileBase.mangle_sname(handle(mod),"text"),Sections(handle(mod))))
             seekloc += sectionoffset(text)
+        elseif isa(handle(mod), ELF.ELFHandle)
+            # In weird executables, the executable segment may not be at offset 0
+            phs = ELF.ProgramHeaders(handle(mod))
+            idx = findfirst(p->p.p_type==ELF.PT_LOAD &&
+                               ((p.p_flags & ELF.PF_X) != 0), phs)
+            seekloc += phs[idx].p_offset
         end
         seek(handle(mod), seekloc)
         insts = read(handle(mod), UInt8, nbytes)
@@ -47,6 +54,8 @@ module Arsenic
         regs = Gallium.getregs(session)
         modules = state.top_interp.modules
         oldstack, oldRCs = state.top_interp.stack, state.top_interp.RCs
+        (length(oldRCs) == 1) &&
+            return update_stack!(state, session)
         (ok, oneupRC) = try
             Gallium.Unwinder.unwind_step(session, modules, regs; stacktop = true, ip_only = false)
         catch err
