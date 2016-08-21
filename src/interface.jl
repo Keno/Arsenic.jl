@@ -150,8 +150,9 @@ function symbolicate_frame(session, modules, x)
     found = false
     symb = "Unknown Function"
     try
-        symb = demangle(Gallium.Unwinder.symbolicate(session, modules, UInt64(x.ip)))
-        found = !contains(symb, "Unknown")
+        found, symb = Gallium.Unwinder.symbolicate(session, modules, UInt64(x.ip))
+        symb = demangle(symb)
+        !found && (symb = "Most likely $symb")
     catch err
         (!isa(err, ErrorException) || !contains(err.msg, "found")) && rethrow(err)
     end
@@ -200,6 +201,16 @@ function ASTInterpreter.execute_command(state, stack::Union{Gallium.CStackFrame,
     ns = state.top_interp
     newRC = Gallium.Unwinder.unwind_step(ns.session, ns.modules, ns.RCs[end-(state.level-1)])[2]
     @show newRC
+    return false
+end
+
+function ASTInterpreter.execute_command(state, stack::Union{Gallium.CStackFrame,Gallium.NativeStack}, ::Val{:symbolicate}, command)
+    session = state.top_interp.session
+    modules = state.top_interp.modules
+    x = isa(stack, Gallium.NativeStack) ? stack.stack[end] : stack
+    approximate, name = Gallium.Unwinder.symbolicate(session, modules, UInt64(x.ip))
+    name = demangle(name)
+    println(approximate ? "Most likely " : "", name)
     return false
 end
 
