@@ -8,6 +8,7 @@ module Arsenic
     using ObjFileBase
     using ObjFileBase: handle
     using ELF
+    using COFF
 
     function get_insts(session, modules, ip)
         base, mod = Gallium.find_module(session, modules, UInt(ip))
@@ -37,6 +38,11 @@ module Arsenic
             idx = findfirst(p->p.p_type==ELF.PT_LOAD &&
                                ((p.p_flags & ELF.PF_X) != 0), phs)
             seekloc += phs[idx].p_offset
+        elseif isa(handle(mod), COFF.COFFHandle)
+            text = ObjFileBase.deref(first(filter(x->sectionname(x)==
+                ObjFileBase.mangle_sname(handle(mod),"text"),Sections(handle(mod)))))
+            seekloc -= text.VirtualAddress
+            seekloc += text.PointerToRawData
         end
         seek(handle(mod), seekloc)
         insts = read(handle(mod), UInt8, nbytes)

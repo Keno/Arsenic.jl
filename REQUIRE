@@ -4,3 +4,5 @@ Cxx
 DWARF
 DataStructures
 Gadfly
+JLD
+ProgressMeter

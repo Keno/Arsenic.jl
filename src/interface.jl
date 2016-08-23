@@ -120,8 +120,8 @@ function ASTInterpreter.print_status(state, x::Gallium.CStackFrame; kwargs...)
         # Try disassembling at the start of the function, highlighting the
         # current ip.
         disasm_around_ip(STDOUT, insts, ipoffset; ipbase=ipbase, triple = triple_for_sess(state.top_interp.session))
-    catch
-        warn("Failed to obtain instructions from object files. Incorrect unwind info?")
+    catch e
+        warn("Failed to obtain instructions from object files ($e). Incorrect unwind info?")
         # This could have failed for a variety of reasons (missing unwind info,
         # self modifying code, etc). If so, get the instructions directly
         # from the target
@@ -199,7 +199,7 @@ end
 
 function ASTInterpreter.execute_command(state, stack::Union{Gallium.CStackFrame,Gallium.NativeStack}, ::Val{:unwind}, command)
     ns = state.top_interp
-    newRC = Gallium.Unwinder.unwind_step(ns.session, ns.modules, ns.RCs[end-(state.level-1)])[2]
+    newRC = Gallium.Unwinder.unwind_step(ns.session, ns.modules, ns.RCs[end-(state.level-1)]; allow_frame_based = false)[2]
     @show newRC
     return false
 end

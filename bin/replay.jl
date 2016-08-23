@@ -30,5 +30,6 @@ modules = Gallium.MultiASModules{RR.AddressSpaceUid}(Dict{RR.AddressSpaceUid, An
     end
     Gallium.LazyJITModules(glibcmodules, 0)
 end
-ASTInterpreter.RunDebugREPL(Arsenic.compute_stack(modules, sess))
+stack = Arsenic.compute_stack(modules, sess)
+#ASTInterpreter.RunDebugREPL(stack)
 #exit(0)
