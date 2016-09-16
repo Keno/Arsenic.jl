@@ -4,6 +4,8 @@ using Gallium
 using ObjFileBase
 using ProfileView
 
+eval(Gallium, :(allow_bad_unwind = false))
+
 buf = IOBuffer(readbytes("perf.data"))
 handle = PerfEvents.readmeta(buf)
 
@@ -54,22 +56,65 @@ for m in values(modules)
   merge!(m, kernel_modules)
 end
 
+# Perf RC -> Gallium RC
+function make_RC(sample_dict, attr)
+    RC = Gallium.X86_64.BasicRegs()
+    regs = sample_dict[PerfEvents.PERF_SAMPLE_REGS_USER]
+    reg_idx = 1
+    for i = 0:63
+      if ((UInt64(1) << i) & attr.sample_regs_user) != 0
+        dwarfno = Gallium.X86_64.inverse_dwarf[PerfEvents.perf_regs_numbering[i]]
+        if dwarfno in Gallium.X86_64.basic_regs
+            Gallium.set_dwarf!(RC, dwarfno, regs[reg_idx])
+        end
+        reg_idx += 1
+      end
+    end
+    RC
+end
+
+modules = Gallium.MultiASModules{UInt32}((args...)->error("Unable to synthesize new AS"), modules);
+
 # traces
-for tid in keys(modules)
+for tid in keys(modules.modules_by_as)
+  cache = Gallium.Unwinder.CFICache(100_000)
   traces = reduce(vcat,map(samples) do sample
     sd = PerfEvents.extract_sample_kinds(sample.record, attr)
     sd[PerfEvents.PERF_SAMPLE_TID].tid != tid && return UInt64[]
-    push!(collect(filter(x->!PerfEvents.is_perf_context_ip(x) && x != 0,
-        sd[PerfEvents.PERF_SAMPLE_CALLCHAIN])),0)
+    callchain = collect(filter(x->!PerfEvents.is_perf_context_ip(x) && x != 0,
+        sd[PerfEvents.PERF_SAMPLE_CALLCHAIN]))
+    if haskey(sd, PerfEvents.PERF_SAMPLE_STACK_USER) &&
+        haskey(sd, PerfEvents.PERF_SAMPLE_REGS_USER) &&
+        !isempty(sd[PerfEvents.PERF_SAMPLE_REGS_USER])
+      RC = make_RC(sd, attr)
+      stack = sd[PerfEvents.PERF_SAMPLE_STACK_USER]
+      stack_start_addr = Gallium.get_dwarf(RC, :rsp)
+      session = Gallium.FakeMemorySession(
+        Tuple{UInt64,Vector{UInt8}}[(stack_start_addr,stack)],
+        Gallium.X86_64.X86_64Arch(), tid)
+      ips = UInt64[]
+      try
+        Gallium.rec_backtrace(RC, session, modules, false, cache) do RC
+            push!(ips,Gallium.ip(RC))
+            return true
+        end
+        append!(callchain, ips)
+      catch e
+        @show e
+      end
+    end
+    push!(callchain, 0)
+    callchain
   end)
 
   lidict = Dict([ip =>
     StackFrame[StackFrame(Symbol(
-      Arsenic.demangle(Gallium.symbolicate(modules[tid], ip)[2])),Symbol(""),0,
+      Arsenic.demangle(Gallium.symbolicate(modules.modules_by_as[tid], ip)[2])),Symbol(""),0,
       Nullable{LambdaInfo}(), true, false, ip)]
     for ip in filter(x->x != 0, unique(traces))])
 
   @show (tid, count(x->x==0, traces))
-  ProfileView.svgwrite("trace-$tid.svg", traces, lidict, C=true)
+  ProfileView.view(traces, lidict=lidict, C=true)
+  #ProfileView.svgwrite("trace-$tid.svg", traces, lidict, C=true)
   #ProfileView.svgwrite("out.svg", traces, lidict, C = true)
 end
