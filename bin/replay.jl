@@ -13,7 +13,8 @@ if !isdefined(Base, :active_repl)
 end
 modules = Gallium.MultiASModules{RR.AddressSpaceUid}(Dict{RR.AddressSpaceUid, Any}()) do session
     imageh = Gallium.read_exe(session)
-    auxv = map(unsafe_load,icxx"$(current_task(session))->vm()->saved_auxv();")
+    task = current_task(session)
+    auxv = map(unsafe_load,icxx"$task->vm()->saved_auxv();")
     image_slide = Gallium.GlibcDyldModules.compute_entry_ptr(session, auxv) - imageh.file.header.e_entry
     glibcmodules = Gallium.GlibcDyldModules.load_library_map(session, imageh, image_slide;
         current_ip = Gallium.ip(Gallium.getregs(current_task(session))))
@@ -32,4 +33,4 @@ modules = Gallium.MultiASModules{RR.AddressSpaceUid}(Dict{RR.AddressSpaceUid, An
 end
 stack = Arsenic.compute_stack(modules, sess)
 #ASTInterpreter.RunDebugREPL(stack)
-#exit(0)
+exit(0)
