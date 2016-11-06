@@ -1,13 +1,19 @@
 const IJulia = 1
 using Arsenic
+using ASTInterpreter
 using PerfEvents
 using Gallium
 using ObjFileBase
 using ProfileView
+using ProgressMeter
 
 Profile.init(;n = 10^9, delay = 0.001)
 
-eval(Gallium, :(allow_bad_unwind = false))
+# This script is very useful for hunting unwind failures. Unfortunately there
+# are too many for this to be a viable default option
+hunt_unwind_failures = false
+
+eval(Gallium, :(allow_bad_unwind = !$hunt_unwind_failures))
 eval(Base, :(have_color = true))
 
 buf = IOBuffer(readbytes(length(ARGS) >= 1 ? ARGS[1] : "perf.data"))
@@ -31,11 +37,16 @@ last_serial = 0
 
 num_samples = 0
 
+max_offset = handle.header.data.size
+max_processed_offset = 0
+p = Progress(max_offset, 1, "Sorting records...")
 PerfEvents.sorted_record_chunks(handle) do chunk
-  @show chunk.chunk
   global last_serial
   global num_samples
-  for record in chunk
+  global max_processed_offset
+  for (num,record) in enumerate(chunk)
+    max_processed_offset = max(max_processed_offset, chunk.chunk[num][2])
+    update!(p, Int(max_processed_offset))
     if record.event_type == PerfEvents.PERF_RECORD_MMAP ||
        record.event_type == PerfEvents.PERF_RECORD_MMAP2
       local tid, red, fname
@@ -54,9 +65,9 @@ PerfEvents.sorted_record_chunks(handle) do chunk
         end
       else
         contains(fname, "[vdso]") && continue
-        @show fname
         asid = haskey(active_asids, tid.tid) ? active_asids[tid.tid] : (active_asids[tid.tid] = ASID(tid.tid, last_serial += 1))
         !haskey(modules, asid) && (modules[asid] = Dict{RemotePtr{Void}, Any}())
+        @show (start, fname)
         try
           h = ObjFileBase.readmeta(IOBuffer(open(Base.Mmap.mmap,fname)))
           modules[asid][start] = Gallium.GlibcDyldModules.mod_for_h(h, start, fname)
@@ -126,12 +137,16 @@ end
 
 modules = Gallium.MultiASModules{ASID}((args...)->error("Unable to synthesize new AS"), modules);
 
+total_samples_to_process = sum(length(kv[2]) for kv in samples)
+@show total_samples_to_process
+progress = Progress(total_samples_to_process, 1, "Collecting backtraces")
 # traces
 for asid in keys(samples)
   isempty(samples[asid]) && continue
   (!haskey(modules.modules_by_as,asid) || isempty(modules.modules_by_as[asid])) && continue
   cache = Gallium.Unwinder.CFICache(100_000)
   traces = reduce(vcat,map(samples[asid]) do sample
+    next!(progress)
     sd = PerfEvents.extract_sample_kinds(sample.record, attr)
     callchain = collect(filter(x->!PerfEvents.is_perf_context_ip(x) && x != 0,
         sd[PerfEvents.PERF_SAMPLE_CALLCHAIN]))
@@ -152,26 +167,27 @@ for asid in keys(samples)
         end
         append!(callchain, ips)
       catch e
-        PerfEvents.dump_sample_dict(STDOUT, sd)
         println("In asid $asid: $e")
+        eval(Gallium, :(allow_bad_unwind = true))
+        stack = Arsenic.compute_stack(modules, session, RC)
+        ASTInterpreter.RunDebugREPL(stack)
+        eval(Gallium, :(allow_bad_unwind = false))
       end
     end
     push!(callchain, 0)
     callchain
   end)
-  @show traces
+  println("Done collecting backtraces")
   fs = (ip =>
     StackFrame[StackFrame(Symbol(
       Arsenic.demangle(Gallium.symbolicate(modules.modules_by_as[asid], ip)[2])),Symbol(""),0,
       Nullable{LambdaInfo}(), true, false, ip)]
     for ip in filter(x->x != 0, unique(traces)))
   local lidict
-  @profile lidict = Dict(fs)
+  lidict = Dict(fs)
 
   @show (asid, count(x->x==0, traces))
   #ProfileView.view(traces, lidict=lidict, C=true)
   ProfileView.svgwrite("trace-$(asid.tid).svg", traces, lidict, C=true)
   #ProfileView.svgwrite("out.svg", traces, lidict, C = true)
 end
-
-ProfileView.svgwrite("self-profile.svg")

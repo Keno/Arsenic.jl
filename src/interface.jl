@@ -114,7 +114,12 @@ function ASTInterpreter.print_status(state, x::Gallium.CStackFrame; kwargs...)
         ipbase = base+loc
         ipoffset = UInt64(x.ip-loc-base-(x.stacktop?0:1))
     else
-        insts = Gallium.load(session, Gallium.RemotePtr{UInt8}(x.ip), 40)
+        try
+          insts = Gallium.load(session, Gallium.RemotePtr{UInt8}(x.ip), 40)
+        catch
+          warn("Failed to load instructions at address ($(x.ip)). Incorrect unwind info?")
+          return
+        end
     end
     try
         # Try disassembling at the start of the function, highlighting the
@@ -193,6 +198,15 @@ function ASTInterpreter.execute_command(state, stack::Union{Gallium.CStackFrame,
         return false
     end
     show(UInt(Gallium.get_dwarf(RC, inverse_map[regname])))
+    println(); println()
+    return false
+end
+
+function ASTInterpreter.execute_command(state, stack::Union{Gallium.CStackFrame,Gallium.NativeStack}, ::Val{:regs}, command)
+    ns = state.top_interp
+    @assert isa(ns, Gallium.NativeStack)
+    RC = ns.RCs[end-(state.level-1)]
+    show(STDOUT, RC)
     println(); println()
     return false
 end

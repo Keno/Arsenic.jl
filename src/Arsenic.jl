@@ -55,6 +55,11 @@ module Arsenic
         Gallium.NativeStack(stack,RCs,modules,session)
     end
     
+    function compute_stack(modules, session::Gallium.FakeMemorySession, RC)
+        stack, RCs = Gallium.stackwalk(RC, session, modules, rich_c = true, collectRCs = true)
+        Gallium.NativeStack(stack,RCs,modules,session)
+    end
+    
     # We should be in the same frame, fast path stack unwinding
     function update_stack_same_frame!(state, session = state.top_interp.session)
         regs = Gallium.getregs(session)
