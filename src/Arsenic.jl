@@ -13,6 +13,12 @@ module Arsenic
     function get_insts(session, modules, ip)
         base, mod = Gallium.find_module(session, modules, UInt(ip))
         modrel = UInt(UInt(ip)-base)
+        if isa(mod, Gallium.SyntheticModule)
+            bounds = mod.get_proc_bounds(session, ip)
+            insts = Gallium.load(session, Gallium.RemotePtr{UInt8}(base+first(bounds)),
+              length(bounds))
+            return base, first(bounds), insts
+        end
         if isnull(mod.xpdata)
             loc, fde = Gallium.Unwinder.find_fde(mod, modrel)
             seekloc = loc
@@ -75,10 +81,12 @@ module Arsenic
         end
         parentsmatch = Gallium.ip(oldRCs[end-1]) == Gallium.ip(oneupRC) &&
             Gallium.get_dwarf(oldRCs[end-1], :rsp) == Gallium.get_dwarf(oneupRC, :rsp)
-        (!ok || !parentsmatch) && update_stack!(state, session)
+        (!ok || !parentsmatch) && return update_stack!(state, session)
         stack, RCs = copy(oldstack), copy(oldRCs)
-        stack[end - 1] = Gallium.frameinfo(regs, session, modules; rich_c = true)
-        RCs[end - 1] = regs
+        ok, frame = Gallium.frameinfo(regs, session, modules; rich_c = true)
+        !ok && return update_stack!(state, session)
+        stack[end] = get(frame)
+        RCs[end] = regs
         state.interp = state.top_interp = Gallium.NativeStack(stack,RCs,modules,session)
     end
 

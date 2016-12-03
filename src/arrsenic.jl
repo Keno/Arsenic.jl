@@ -293,8 +293,13 @@ end
 
 function ASTInterpreter.execute_command(state, stack, ::Val{:maps}, command)
     timeline = state.top_interp.session
-    pid = icxx"$(current_task(timeline))->real_tgid();"
-    print(readstring("/proc/$pid/maps"))
+    parts = split(command, ' ')
+    if length(parts) > 1 && parts[2] == "rr"
+      icxx"$(current_task(timeline))->vm()->dump();"
+    else
+      pid = icxx"$(current_task(timeline))->real_tgid();"
+      print(readstring("/proc/$pid/maps"))
+    end
     return false
 end
 
@@ -347,10 +352,10 @@ function prepare_remote_execution(task::RR.ReplayTask)
     session = prepare_remote_execution(icxx"&$task->session();")
 end
 
-function compute_stack(modules, session::RR.ReplayTimeline)
+function compute_stack(modules, session::RR.ReplayTimeline; cficache=nothing, ip_only=false)
     task = current_task(current_session(session))
     did_fixup, regs = RR.fixup_RC(task, icxx"$task->regs();")
-    stack, RCs = Gallium.stackwalk(regs, task, modules, rich_c = true, collectRCs = true)
+    stack, RCs = Gallium.stackwalk(regs, task, modules, ip_only=ip_only, rich_c = true, collectRCs = true, cficache=cficache)
     if length(stack) != 0
         stack[end].stacktop = !did_fixup
     end
@@ -388,7 +393,7 @@ function Gallium.retrieve_obj_data(session::Union{RR.ReplayTimeline, RR.ReplaySe
         regs = icxx"$task->regs();"
         @assert UInt(Gallium.ip(regs)) == 0
         array_ptr = Gallium.get_dwarf(regs, :rax)
-        data_ptr = Gallium.load(task, RemotePtr{RemotePtr{UInt8}}(array_ptr))
+        data_ptr = Gallium.load(task, RemotePtr{RemotePtr{UInt8,UInt64}}(array_ptr))
         data_size = Gallium.load(task, RemotePtr{Csize_t}(array_ptr+8))
         Gallium.load(task, data_ptr, data_size)
     end

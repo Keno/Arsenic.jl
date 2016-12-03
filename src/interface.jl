@@ -213,7 +213,8 @@ end
 
 function ASTInterpreter.execute_command(state, stack::Union{Gallium.CStackFrame,Gallium.NativeStack}, ::Val{:unwind}, command)
     ns = state.top_interp
-    newRC = Gallium.Unwinder.unwind_step(ns.session, ns.modules, ns.RCs[end-(state.level-1)]; allow_frame_based = false)[2]
+    newRC = Gallium.Unwinder.unwind_step(ns.session, ns.modules, ns.RCs[end-(state.level-1)];
+      allow_frame_based = false, stacktop=ns.stack[end-(state.level-1)].stacktop)[2]
     @show newRC
     return false
 end

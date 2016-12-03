@@ -11,7 +11,7 @@ if !isdefined(Base, :active_repl)
     eval(Base,:(have_color = true))
     eval(Base,:(is_interactive = true))
 end
-modules = Gallium.MultiASModules{RR.AddressSpaceUid}(Dict{RR.AddressSpaceUid, Any}()) do session
+modules = Gallium.MultiASModules(Dict{RR.AddressSpaceUid, Gallium.LazyJITModules{Gallium.ModuleSet{UInt64}}}()) do session
     imageh = Gallium.read_exe(session)
     task = current_task(session)
     auxv = map(unsafe_load,icxx"$task->vm()->saved_auxv();")
@@ -32,5 +32,5 @@ modules = Gallium.MultiASModules{RR.AddressSpaceUid}(Dict{RR.AddressSpaceUid, An
     Gallium.LazyJITModules(glibcmodules, 0)
 end
 stack = Arsenic.compute_stack(modules, sess)
-#ASTInterpreter.RunDebugREPL(stack)
+ASTInterpreter.RunDebugREPL(stack)
 exit(0)
